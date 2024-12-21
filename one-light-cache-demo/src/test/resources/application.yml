@@ -1,0 +1,31 @@
+light:
+  cache:
+    # 生产者组
+    producer-group: my-cache-producer-group
+    # 消费者组
+    consumer-group: my-cache-consumer-group
+    # RocketMQ 名称服务器
+    rocketmq-name-server: localhost:9876
+    # 是否使用 Redis 作为缓存 默认 true
+    use-redis-as-cache: true
+    # 缓存配置 可配置多个缓存
+    cache-configs:
+      # 测试用户缓存
+      - cacheName: test-user
+        # 初始缓存数量
+        initial-capacity: 20
+        # 最大缓存数量
+        maximum-size: 100
+        # 5 秒后过期
+        expire-after-write: 5000
+        # 缓存加载表达式 使用 Aviator 表达式，见：com.oneinstep.light.cache.demo.function.GetUserByIdFunction
+        load-cache-expression: getUserById(key)
+        # loadCacheExpression: 'return key + "test"'
+        # 加载缓存等待锁超时时间 超过该时间后，缓存加载失败，将设置null值
+        load-cache-wait-lock-timeout: 3000
+        # 获取数据超时时间
+        fetch-data-timeout: 6000
+        # mq 主题
+        mq-topic: user_data_change
+        # mq 类型，默认使用 RocketMQ
+        mq-type: REDIS

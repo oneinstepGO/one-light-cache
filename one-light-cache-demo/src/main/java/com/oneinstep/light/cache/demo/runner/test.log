@@ -1,0 +1,85 @@
+node1: 更新缓存
+-- 第一部分 收到刷新数据的消息，并且最先抢到锁13:54:54.416，查询最新db数据，更新redis数据 13:54:54.733，获取锁顺序为：node1 -> node2 -> node3 -> node4，此次缓存结果符合预期 user-1-1731650094733
+2024-11-15T13:54:54.409+08:00   [change-group_4]   : refresh key:1
+2024-11-15T13:54:54.415+08:00   [change-group_4]   : refreshOnMsg get lock key:REFRESH_LOCK:user:1
+2024-11-15T13:54:54.416+08:00   [change-group_4]   : Fetching data from db, userId: 1
+2024-11-15T13:54:54.733+08:00   [change-group_4]   : refreshOnMsg set cache to redis key:1 userName=user-1-1731650094733)
+2024-11-15T13:54:54.749+08:00   [Thread-3]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:54.750+08:00   [Thread-3]   : get cache from redis key:1 value:User(userId=1, userName=user-1-1731650094733)
+2024-11-15T13:54:59.829+08:00   [Thread-4]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:59.830+08:00   [Thread-4]   : get cache from redis key:1 value:User(userId=1, userName=user-1-1731650094733)
+-- 第二部分 本地缓存和redis 缓存都过期  获得锁的顺序是 node2 -> node4 -> node3 -> node1，此次缓存结果符合预期 user-1-1731650105248
+2024-11-15T13:55:04.910+08:00   [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:55:05.268+08:00   [Thread-2]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+-- 等node3释放锁后，再次获取锁后， 从redis获取数据 符合预期    ==> 13:55:05.268 获取到锁
+2024-11-15T13:55:05.268+08:00   [Thread-2]   : get cache from redis again. redis key:1 userName=user-1-1731650105248)
+2024-11-15T13:55:05.269+08:00   [Thread-4]   : Get data cost too much time: 352ms
+2024-11-15T13:55:05.269+08:00   [Thread-2]   : Get data cost too much time: 359ms
+2024-11-15T13:55:05.269+08:00   [Thread-3]   : Get data cost too much time: 353ms
+
+
+node2: 更新缓存
+-- 第一部分 收到消息，但未抢到锁，稍后再次获取锁13:54:54.740，从redis拿到最新数据user-1-1731650094733
+2024-11-15T13:54:54.412+08:00  INFO  [change-group_4]   : refresh key:1
+2024-11-15T13:54:54.415+08:00  INFO  [change-group_4]   : refreshOnMsg but get lock failed key:1 , just invalidate local cache
+2024-11-15T13:54:54.545+08:00  INFO  [Thread-3]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:54.739+08:00  INFO  [Thread-3]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+2024-11-15T13:54:54.740+08:00  INFO  [Thread-3]   : get cache from redis again. userName=user-1-1731650094733)
+2024-11-15T13:54:54.742+08:00  WARN  [Thread-3]   : Get data cost too much time: 197ms
+2024-11-15T13:54:54.742+08:00  WARN  [Thread-4]   : Get data cost too much time: 183ms
+2024-11-15T13:54:54.742+08:00  WARN  [Thread-2]   : Get data cost too much time: 191ms
+2024-11-15T13:54:59.818+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:59.820+08:00  INFO  [Thread-2]   : get cache from redis key:1 userName=user-1-1731650094733)
+-- 第二部分 本地缓存和redis 缓存都过期
+2024-11-15T13:55:04.906+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:55:04.907+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+-- node2 最先获取到 分布式锁 更新 redis   ==> 13:55:04.907 获取到锁，13:55:05.250更新redis缓存，构建缓存耗时 343ms，新值为：user-1-1731650105248
+2024-11-15T13:55:04.907+08:00  INFO  [Thread-2]   : Fetching data from db, userId: 1
+2024-11-15T13:55:05.250+08:00  INFO  [Thread-2]   : set cache to redis userName=user-1-1731650105248)
+2024-11-15T13:55:05.263+08:00  WARN  [Thread-2]   : Get data cost too much time: 357ms
+2024-11-15T13:55:05.263+08:00  WARN  [Thread-4]   : Get data cost too much time: 352ms
+2024-11-15T13:55:05.263+08:00  WARN  [Thread-3]   : Get data cost too much time: 353ms
+
+
+node3: 更新缓存
+-- 第一部分 收到消息，但未抢到锁，稍后再次获取锁13:54:54.744，从redis拿到最新数据user-1-1731650094733
+2024-11-15T13:54:54.410+08:00  INFO  [-change-group_4]   : refresh key:1
+2024-11-15T13:54:54.415+08:00  INFO  [-change-group_4]   : refreshOnMsg but get lock failed key:1 , just invalidate local cache
+2024-11-15T13:54:54.546+08:00  INFO  [Thread-3]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:54.743+08:00  INFO  [Thread-3]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+2024-11-15T13:54:54.744+08:00  INFO  [Thread-3]   : get cache from redis again. userName=user-1-1731650094733)
+2024-11-15T13:54:54.745+08:00  WARN  [Thread-3]   : Get data cost too much time: 199ms
+2024-11-15T13:54:54.745+08:00  WARN  [Thread-4]   : Get data cost too much time: 198ms
+2024-11-15T13:54:54.745+08:00  WARN  [Thread-2]   : Get data cost too much time: 185ms
+-- 第二部分 本地缓存和redis 缓存都过期
+2024-11-15T13:54:59.817+08:00  INFO  [Thread-4]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:59.820+08:00  INFO  [Thread-4]   : get cache from redis userName=user-1-1731650094733)
+2024-11-15T13:55:04.908+08:00  INFO  [Thread-4]   : getFromRedisOrFetcher key:1
+2024-11-15T13:55:05.266+08:00  INFO  [Thread-4]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+-- 等node4释放锁后，再次获取锁后， 从redis获取数据 符合预期    ==> 13:55:05.266 获取到锁
+2024-11-15T13:55:05.266+08:00  INFO  [Thread-4]   : get cache from redis again. userName=user-1-1731650105248)
+2024-11-15T13:55:05.267+08:00  WARN  [Thread-4]   : Get data cost too much time: 359ms
+2024-11-15T13:55:05.267+08:00  WARN  [Thread-3]   : Get data cost too much time: 340ms
+2024-11-15T13:55:05.267+08:00  WARN  [Thread-2]   : Get data cost too much time: 359ms
+
+
+node4: 更新缓存
+-- 第一部分 收到消息，但未抢到锁，稍后再次获取锁13:54:54.747，从redis拿到最新数据user-1-1731650094733
+2024-11-15T13:54:54.410+08:00  INFO  [-change-group_4]   : refresh key:1
+2024-11-15T13:54:54.415+08:00  INFO  [-change-group_4]   : refreshOnMsg but get lock failed key:1 , just invalidate local cache
+2024-11-15T13:54:54.540+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:54.746+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+2024-11-15T13:54:54.747+08:00  INFO  [Thread-2]   : get cache from redis again. redis userName=user-1-1731650094733)
+2024-11-15T13:54:54.748+08:00  WARN  [Thread-2]   : Get data cost too much time: 208ms
+2024-11-15T13:54:54.748+08:00  WARN  [Thread-4]   : Get data cost too much time: 207ms
+2024-11-15T13:54:54.748+08:00  WARN  [Thread-3]   : Get data cost too much time: 208ms
+-- 第二部分 本地缓存和redis 缓存都过期
+2024-11-15T13:54:59.841+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:54:59.843+08:00  INFO  [Thread-2]   : get cache from redis userName=user-1-1731650094733)
+2024-11-15T13:55:04.923+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher key:1
+2024-11-15T13:55:05.264+08:00  INFO  [Thread-2]   : getFromRedisOrFetcher get lock key:REFRESH_LOCK:user:1
+-- 等node2释放锁后，再次获取锁后， 从redis获取数据 符合预期    ==> 13:55:05.265 获取到锁
+2024-11-15T13:55:05.265+08:00  INFO  [Thread-2]   : get cache from redis again. redis userName=user-1-1731650105248)
+2024-11-15T13:55:05.265+08:00  WARN  [Thread-3]   : Get data cost too much time: 338ms
+2024-11-15T13:55:05.265+08:00  WARN  [Thread-4]   : Get data cost too much time: 326ms
+2024-11-15T13:55:05.265+08:00  WARN  [Thread-2]   : Get data cost too much time: 342ms
