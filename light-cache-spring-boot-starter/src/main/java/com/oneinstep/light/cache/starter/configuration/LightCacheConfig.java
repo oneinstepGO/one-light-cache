@@ -35,7 +35,8 @@ public class LightCacheConfig {
         for (LightCacheProperties cacheConfig : properties.getCacheConfigs()) {
             try {
                 // 创建并注册缓存
-                LightCache.createFromProperties(cacheConfig.getCacheName(),
+                LightCache.createFromProperties(
+                        cacheConfig.getCacheName(),
                         cacheConfig.getLoadCacheExpression(),
                         cacheConfig.getInitialCapacity(),
                         cacheConfig.getMaximumSize(),

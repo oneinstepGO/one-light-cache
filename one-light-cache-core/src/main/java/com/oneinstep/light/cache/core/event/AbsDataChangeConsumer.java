@@ -68,6 +68,8 @@ public abstract class AbsDataChangeConsumer {
                 return;
             }
 
+            log.info("Processing data change message: dataName={}, dataId={}, type={}", dataName, dataId, type);
+
             // 获取缓存管理器
             LightCacheManager cacheManager = LightCacheManager.getInstance();
 
@@ -80,20 +82,26 @@ public abstract class AbsDataChangeConsumer {
 
             // 获取缓存
             LightCache<?> cache = cacheManager.getCache(dataName);
+            log.info("Found cache for dataName: {}", dataName);
 
             switch (type) {
                 case UPDATE:
+                    log.info("Processing UPDATE message for dataId: {}", dataId);
                     cache.refreshOnMsg(dataId, false);
+                    log.info("Successfully processed UPDATE message for dataId: {}", dataId);
                     break;
                 case DELETE:
+                    log.info("Processing DELETE message for dataId: {}", dataId);
                     cache.refreshOnMsg(dataId, true);
+                    cache.invalidate(dataId); // Ensure the cache entry is invalidated
+                    log.info("Successfully processed DELETE message for dataId: {}", dataId);
                     break;
                 case ADD:
-                    // 不需要处理
+                    log.info("Received ADD message for dataId: {}, no action needed", dataId);
                     break;
                 default:
-                    cache.invalidate(dataId);
                     log.warn("Unsupported data change type: {}", type);
+                    cache.invalidate(dataId);
                     break;
             }
         } catch (Exception e) {

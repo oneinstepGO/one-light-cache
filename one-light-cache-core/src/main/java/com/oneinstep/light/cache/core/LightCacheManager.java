@@ -1,30 +1,36 @@
 package com.oneinstep.light.cache.core;
 
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-
-import org.apache.commons.lang3.StringUtils;
-import org.redisson.api.RedissonClient;
-
 import com.oneinstep.light.cache.core.event.AbsDataChangeConsumer;
 import com.oneinstep.light.cache.core.event.ConsumerEventPublisher;
 import com.oneinstep.light.cache.core.exception.CacheNameExistException;
 import com.oneinstep.light.cache.core.exception.LightCacheException;
 import com.oneinstep.light.cache.core.util.SpringBeanUtil;
-
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.annotation.Nonnull;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RedissonClient;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 缓存管理器 单例模式
  */
 @Slf4j
+@Getter
 public class LightCacheManager {
 
     private LightCacheManager() {
+
     }
+
+    // 指标注册器
+    public static final MeterRegistry METRICS_REGISTRY = new SimpleMeterRegistry();
 
     // 单例
     private static volatile LightCacheManager instance;
@@ -47,6 +53,10 @@ public class LightCacheManager {
     @Getter
     private String rocketmqNameServer;
 
+    // Kafka Bootstrap Servers
+    @Getter
+    private String kafkaBootstrapServers;
+
     // 消费者组
     @Getter
     private String consumerGroup;
@@ -61,10 +71,11 @@ public class LightCacheManager {
      * @param useRedisAsCache    是否使用Redis作为缓存
      * @param redissonClient     Redisson客户端
      * @param rocketmqNameServer RocketMQ NameServer
+     * @param kafkaBootstrapServers Kafka Bootstrap Servers
      * @param consumerGroup      消费者组
      */
     public synchronized void init(boolean useRedisAsCache, RedissonClient redissonClient, String rocketmqNameServer,
-                                  String consumerGroup) {
+                                  String kafkaBootstrapServers, String consumerGroup) {
         if (isInit) {
             return;
         }
@@ -75,9 +86,19 @@ public class LightCacheManager {
             throw new IllegalArgumentException("If you use Redis as cache, you must provide a Redisson client");
         }
         this.rocketmqNameServer = rocketmqNameServer;
+        this.kafkaBootstrapServers = kafkaBootstrapServers;
         this.consumerGroup = consumerGroup;
+
         isInit = true;
         log.info("LightCacheManager initialized");
+    }
+
+    /**
+     * 初始化 - 向后兼容的重载方法
+     */
+    public synchronized void init(boolean useRedisAsCache, RedissonClient redissonClient, String rocketmqNameServer,
+                                  String consumerGroup) {
+        init(useRedisAsCache, redissonClient, rocketmqNameServer, null, consumerGroup);
     }
 
     /**
@@ -126,6 +147,15 @@ public class LightCacheManager {
     }
 
     /**
+     * 注销缓存
+     *
+     * @param cacheName 缓存名称
+     */
+    public void unregisterCache(@Nonnull String cacheName) {
+        ALL_CACHE.remove(cacheName);
+    }
+
+    /**
      * 获取缓存
      *
      * @param cacheName 缓存名称
@@ -153,32 +183,6 @@ public class LightCacheManager {
      */
     public boolean isCacheExist(@Nonnull String cacheName) {
         return ALL_CACHE.containsKey(cacheName);
-    }
-
-    /**
-     * 添加缓存消费者
-     *
-     * @param cacheName 缓存名称
-     * @param consumer  消费者
-     */
-    public void registerConsumer(String cacheName, AbsDataChangeConsumer consumer) {
-        if (!isInit) {
-            log.warn("LightCacheManager is not initialized");
-            throw new IllegalArgumentException("LightCacheManager is not initialized");
-        }
-        if (StringUtils.isBlank(cacheName)) {
-            log.warn("Cache name is blank");
-            throw new IllegalArgumentException("Cache name is blank");
-        }
-        if (consumer == null) {
-            log.warn("Consumer is null");
-            throw new IllegalArgumentException("Consumer is null");
-        }
-        AbsDataChangeConsumer changeConsumer = CACHE_CONSUMER.putIfAbsent(cacheName, consumer);
-        if (changeConsumer != null) {
-            log.warn("Consumer already exists: {}", cacheName);
-            throw new IllegalArgumentException("Consumer already exists: " + cacheName);
-        }
     }
 
     /**
@@ -221,7 +225,7 @@ public class LightCacheManager {
      * @param cacheName 缓存名称
      * @param consumer  消费者
      */
-    public void setConsumer(@Nonnull String cacheName, AbsDataChangeConsumer consumer) {
+    public void setConsumer(@Nonnull String cacheName, @Nonnull AbsDataChangeConsumer consumer) {
         CACHE_CONSUMER.putIfAbsent(cacheName, consumer);
     }
 
@@ -237,6 +241,13 @@ public class LightCacheManager {
             throw new LightCacheException("LightCacheManager is not initialized");
         }
         return new LightCache.CacheBuilder<>();
+    }
+
+    /**
+     * 获所有缓存
+     */
+    public Map<String, LightCache<?>> getAllCaches() {
+        return Collections.unmodifiableMap(ALL_CACHE);
     }
 
 }

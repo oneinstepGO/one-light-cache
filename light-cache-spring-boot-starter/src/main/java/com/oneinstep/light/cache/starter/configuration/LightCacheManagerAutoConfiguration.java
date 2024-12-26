@@ -1,5 +1,12 @@
 package com.oneinstep.light.cache.starter.configuration;
 
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.oneinstep.light.cache.core.LightCacheManager;
+import com.oneinstep.light.cache.starter.producer.KafkaDataChangeMsgProducer;
+import com.oneinstep.light.cache.starter.producer.RedisDataChangeMsgProducer;
+import com.oneinstep.light.cache.starter.producer.RocketMQDataChangeMsgProducer;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.redisson.api.RedissonClient;
@@ -10,14 +17,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
-
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.oneinstep.light.cache.core.LightCacheManager;
-import com.oneinstep.light.cache.starter.producer.RedisDataChangeMsgProducer;
-import com.oneinstep.light.cache.starter.producer.RocketMQDataChangeMsgProducer;
-
-import jakarta.annotation.PreDestroy;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * LightCacheManager 自动配置
@@ -43,12 +42,14 @@ public class LightCacheManagerAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public LightCacheManager configureLightCacheManager(RedissonClient redissonClient, Environment environment) {
+    public LightCacheManager lightCacheManager(RedissonClient redissonClient, Environment environment) {
         String rocketmqNameServer = getNameServer(environment);
+        String kafkaBootstrapServers = getKafkaBootstrapServers(environment);
         // 获取 LightCacheManager 实例
         LightCacheManager manager = LightCacheManager.getInstance();
         // 调用 init 方法初始化 LightCacheManager
-        manager.init(properties.isUseRedisAsCache(), redissonClient, rocketmqNameServer, properties.getConsumerGroup());
+        manager.init(properties.isUseRedisAsCache(), redissonClient, rocketmqNameServer,
+                kafkaBootstrapServers, properties.getConsumerGroup());
         return manager;
     }
 
@@ -78,6 +79,20 @@ public class LightCacheManagerAutoConfiguration {
     }
 
     /**
+     * 注册 KafkaDataChangeMsgProducer
+     *
+     * @param environment 环境变量
+     * @return KafkaDataChangeMsgProducer
+     */
+    @Bean(initMethod = "init", destroyMethod = "destroy")
+    @ConditionalOnClass(name = "org.apache.kafka.clients.producer.KafkaProducer")
+    public KafkaDataChangeMsgProducer kafkaDataChangeMsgProducer(Environment environment) {
+        String kafkaBootstrapServers = getKafkaBootstrapServers(environment);
+        properties.setKafkaBootstrapServers(kafkaBootstrapServers);
+        return new KafkaDataChangeMsgProducer(properties);
+    }
+
+    /**
      * 销毁 LightCacheManager
      */
     @PreDestroy
@@ -95,5 +110,14 @@ public class LightCacheManagerAutoConfiguration {
         return rocketmqNameServer;
     }
 
+    private String getKafkaBootstrapServers(Environment environment) {
+        String kafkaBootstrapServers = this.properties.getKafkaBootstrapServers();
+        if (StringUtils.isBlank(kafkaBootstrapServers)) {
+            log.warn("kafkaBootstrapServers is not set, use default value: {}",
+                    environment.getProperty("spring.kafka.bootstrap-servers", "localhost:9092"));
+            kafkaBootstrapServers = environment.getProperty("spring.kafka.bootstrap-servers", "localhost:9092");
+        }
+        return kafkaBootstrapServers;
+    }
 
 }

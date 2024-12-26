@@ -1,19 +1,18 @@
 package com.oneinstep.light.cache.demo;
 
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import com.oneinstep.light.cache.core.LightCache;
 import com.oneinstep.light.cache.core.LightCache.MQType;
 import com.oneinstep.light.cache.core.LightCacheManager;
 import com.oneinstep.light.cache.core.exception.CacheNameExistException;
-import com.oneinstep.light.cache.demo.bean.User;
 import com.oneinstep.light.cache.demo.facade.UserDTO;
-
 import lombok.extern.slf4j.Slf4j;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.LocalDateTime;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 @Slf4j
 class LightCacheNoSpringTest {
@@ -35,22 +34,22 @@ class LightCacheNoSpringTest {
 
         Assertions.assertThrowsExactly(CacheNameExistException.class, () -> {
             // 重复的缓存名称
-            LightCacheManager.<User>newCacheBuilder()
+            LightCacheManager.<UserDTO>newCacheBuilder()
                     .cacheName("user")
                     .initialCapacity(20)
                     .maximumSize(100)
                     .expireAfterWrite(5000)
-                    .fetcher(userIdStr -> new User())
+                    .fetcher(userIdStr -> UserDTO.builder().userId(userIdStr).userName("user-" + userIdStr).build())
                     .mqTopic("user_data_change1")
                     .mqType(MQType.ROCKETMQ)
                     .buildAndRegister();
 
-            LightCacheManager.<User>newCacheBuilder()
+            LightCacheManager.<UserDTO>newCacheBuilder()
                     .cacheName("user")
                     .initialCapacity(10)
                     .maximumSize(100)
                     .expireAfterWrite(5000)
-                    .fetcher(userIdStr -> new User())
+                    .fetcher(userIdStr -> UserDTO.builder().userId(userIdStr).userName("user-" + userIdStr).build())
                     .mqTopic("user_data_change2")
                     .buildAndRegister();
         });
@@ -59,25 +58,24 @@ class LightCacheNoSpringTest {
 
     @Test
     void testCacheExpire() {
-        LightCacheManager.<User>newCacheBuilder()
+        LightCacheManager.<UserDTO>newCacheBuilder()
                 .cacheName("test-user-direct")
                 .initialCapacity(20)
                 .maximumSize(100)
                 .expireAfterWrite(5000)
-                .fetcher(userIdStr -> User.builder().userId(Long.parseLong(userIdStr))
-                        .userName("user-" + System.currentTimeMillis()).build())
+                .fetcher(userIdStr -> UserDTO.builder().userId(userIdStr).userName("user-" + userIdStr).createTime(LocalDateTime.now()).build())
                 .mqTopic("user_data_change")
                 .buildAndRegister();
 
-        LightCache<User> cache = LightCacheManager.getInstance().getCache("test-user-direct");
-        User user1 = cache.get("1");
+        LightCache<UserDTO> cache = LightCacheManager.getInstance().getCache("test-user-direct");
+        UserDTO user1 = cache.get("1");
         log.info("user1: {}", user1);
         try {
             Thread.sleep(6000);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        User user2 = cache.get("1");
+        UserDTO user2 = cache.get("1");
         log.info("user2: {}", user2);
 
         assertNotNull(user1);

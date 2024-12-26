@@ -1,21 +1,19 @@
 package com.oneinstep.light.cache.demo.runner;
 
-import static com.oneinstep.light.cache.demo.constant.DataNameConstant.USER;
-
-import java.util.Random;
-import java.util.concurrent.TimeUnit;
-
-import org.springframework.boot.CommandLineRunner;
-
 import com.alibaba.fastjson2.JSON;
 import com.oneinstep.light.cache.core.LightCache;
 import com.oneinstep.light.cache.core.LightCacheManager;
 import com.oneinstep.light.cache.core.event.DataChangeMsg;
-import com.oneinstep.light.cache.demo.bean.User;
+import com.oneinstep.light.cache.demo.facade.UserDTO;
 import com.oneinstep.light.cache.starter.producer.IDataChangeMsgProducer;
-
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.CommandLineRunner;
+
+import java.util.Random;
+import java.util.concurrent.TimeUnit;
+
+import static com.oneinstep.light.cache.demo.constant.DataNameConstant.USER;
 
 
 //@Component
@@ -30,7 +28,7 @@ public class TestRunner3 implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         Random r1 = new Random();
-        LightCacheManager.<User>newCacheBuilder()
+        LightCacheManager.<UserDTO>newCacheBuilder()
                 .cacheName(USER)
                 .initialCapacity(20)
                 .maximumSize(100)
@@ -42,9 +40,10 @@ public class TestRunner3 implements CommandLineRunner {
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }
-                    User user = new User();
-                    user.setUserId(Long.parseLong(userIdStr));
-                    user.setUserName("user-" + userIdStr + "-" + System.currentTimeMillis());
+                    UserDTO user = UserDTO.builder()
+                            .userId(userIdStr)
+                            .userName("user-" + userIdStr + "-" + System.currentTimeMillis())
+                            .build();
                     return user;
                 })
                 // 使用 redis 发送消息

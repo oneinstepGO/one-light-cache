@@ -1,19 +1,19 @@
 package com.oneinstep.light.cache.core.event;
 
+import com.oneinstep.light.cache.core.LightCache;
+import com.oneinstep.light.cache.core.LightCacheManager;
+import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.redisson.api.RedissonClient;
 import org.springframework.context.event.EventListener;
-
-import com.oneinstep.light.cache.core.LightCache;
-import com.oneinstep.light.cache.core.LightCacheManager;
-
-import jakarta.annotation.Resource;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
 /**
  * 消费者事件监听器
  */
 @Slf4j
+@Component
 public class ConsumerEventListener {
 
     @Resource
@@ -33,16 +33,28 @@ public class ConsumerEventListener {
         AbsDataChangeConsumer consumer = null;
         // 订阅主题
         try {
-            if (mqType == LightCache.MQType.ROCKETMQ) {
-                String consumerGroup = lightCacheManager.getConsumerGroup();
-                String namesrvAddr = lightCacheManager.getRocketmqNameServer();
-                consumer = new RocketMQDataChangeConsumer(namesrvAddr, dataChangeTopic, consumerGroup);
-            } else {
-                RedissonClient redissonClient = lightCacheManager.getRedissonClient();
-                if (redissonClient != null) {
-                    consumer = new RedisDataChangeConsumer(dataChangeTopic, redissonClient);
-                } else {
-                    log.error("Failed to create consumer, redissonClient is null");
+            switch (mqType) {
+                case LightCache.MQType.ROCKETMQ -> {
+                    String consumerGroup = lightCacheManager.getConsumerGroup();
+                    String namesrvAddr = lightCacheManager.getRocketmqNameServer();
+                    consumer = new RocketMQDataChangeConsumer(namesrvAddr, dataChangeTopic, consumerGroup);
+                }
+                case LightCache.MQType.KAFKA -> {
+                    String consumerGroup = lightCacheManager.getConsumerGroup();
+                    String bootstrapServers = lightCacheManager.getKafkaBootstrapServers();
+                    if (StringUtils.isNotBlank(bootstrapServers)) {
+                        consumer = new KafkaDataChangeConsumer(bootstrapServers, dataChangeTopic, consumerGroup);
+                    } else {
+                        log.error("Failed to create consumer, bootstrapServers is null");
+                    }
+                }
+                default -> {
+                    RedissonClient redissonClient = lightCacheManager.getRedissonClient();
+                    if (redissonClient != null) {
+                        consumer = new RedisDataChangeConsumer(dataChangeTopic, redissonClient);
+                    } else {
+                        log.error("Failed to create consumer, redissonClient is null");
+                    }
                 }
             }
 
@@ -54,6 +66,7 @@ public class ConsumerEventListener {
             // 设置消费者
             lightCacheManager.setConsumer(cacheName, consumer);
             consumer.start();
+            log.info("Successfully started consumer for cacheName: {}, topic: {}, mqType: {}", cacheName, dataChangeTopic, mqType);
 
         } catch (Exception e) {
             log.error("Failed to subscribe topic", e);

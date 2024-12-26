@@ -5,7 +5,13 @@ import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.googlecode.aviator.AviatorEvaluator;
 import com.googlecode.aviator.Expression;
+import com.oneinstep.light.cache.core.event.CacheEventListener;
 import com.oneinstep.light.cache.core.exception.CacheNameExistException;
+import com.oneinstep.light.cache.core.metrics.CacheMetrics;
+import com.oneinstep.light.cache.core.serializer.CacheSerializer;
+import com.oneinstep.light.cache.core.serializer.KryoSerializer;
+import com.oneinstep.light.cache.core.stats.CacheStats;
+import io.micrometer.core.instrument.Timer;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
@@ -15,7 +21,10 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.Function;
 
@@ -60,8 +69,13 @@ public class LightCache<V> {
     private final long expireAfterWrite;
 
     /**
-     * 构建缓存等待锁超时时间，超过这个时间，如果某个线程还未获取到锁（可能由于其它线程正在构建Redis中的缓存），直接返回null
-     * -1 表示不限制超时时间，可能会导致大量线程阻塞在这里，谨慎设置！！！
+     *
+     */
+    private final long expireRandomRange;
+
+    /**
+     * 构建缓存等待锁超时时间，超过这个时间，如果某个线程还未获取到锁可能由于其它线正在构建Redis中的缓存），直接返回null
+     * -1 表示不限制超时时间，能会导致大量线程阻塞在这里，谨慎设置！！！
      */
     private final long loadCacheWaitLockTimeout;
 
@@ -93,37 +107,8 @@ public class LightCache<V> {
     private boolean fetchDataByExpression = false;
 
     /**
-     * 通过Spring Boot配置创建缓存
-     */
-    public static <T> void createFromProperties(String cacheName,
-                                                String loadCacheExpression,
-                                                int initialCapacity,
-                                                long maximumSize,
-                                                long expireAfterWrite,
-                                                long refreshAfterWrite,
-                                                long loadCacheWaitLockTimeout,
-                                                long fetchDataTimeout,
-                                                MQType mqType,
-                                                String mqTopic) {
-
-        // 创建并注册缓存
-        LightCacheManager.<T>newCacheBuilder()
-                .cacheName(cacheName)
-                .initialCapacity(initialCapacity)
-                .maximumSize(maximumSize)
-                .expireAfterWrite(expireAfterWrite)
-                .refreshAfterWrite(refreshAfterWrite)
-                .loadCacheWaitLockTimeout(loadCacheWaitLockTimeout)
-                .mqType(mqType)
-                .mqTopic(mqTopic)
-                .loadCacheExpression(loadCacheExpression)
-                .fetchDataTimeout(fetchDataTimeout)
-                .buildAndRegister();
-    }
-
-    /**
      * 消息队列类型 用于通知本地缓存更新
-     * 默认使用 RocketMQ，推荐使用 RocketMQ，因为 redis 的消息发布订阅功能不够完善，可能会丢失消息
+     * 默认使用 RocketMQ，推荐使用 RocketMQ，因为 redis 的消息发���订阅功能不够完善，可能会丢失消息
      */
     @Getter
     private MQType mqType;
@@ -145,6 +130,52 @@ public class LightCache<V> {
     private final RedissonClient redissonClient;
 
     /**
+     * 添加事件监听器列表
+     */
+    private final List<CacheEventListener> eventListeners = new CopyOnWriteArrayList<>();
+
+    /**
+     * 序列化器
+     */
+    private final CacheSerializer serializer;
+
+    /**
+     * 缓存指标
+     */
+    private CacheMetrics metrics;
+
+    /**
+     * 通过Spring Boot配置创建缓存
+     */
+    public static <T> void createFromProperties(
+            String cacheName,
+            String loadCacheExpression,
+            int initialCapacity,
+            long maximumSize,
+            long expireAfterWrite,
+            long refreshAfterWrite,
+            long loadCacheWaitLockTimeout,
+            long fetchDataTimeout,
+            MQType mqType,
+            String mqTopic) {
+
+        // 创建并注册缓存
+        LightCacheManager.<T>newCacheBuilder()
+                .cacheName(cacheName)
+                .initialCapacity(initialCapacity)
+                .maximumSize(maximumSize)
+                .expireAfterWrite(expireAfterWrite)
+                .refreshAfterWrite(refreshAfterWrite)
+                .loadCacheWaitLockTimeout(loadCacheWaitLockTimeout)
+                .mqType(mqType)
+                .mqTopic(mqTopic)
+                .loadCacheExpression(loadCacheExpression)
+                .fetchDataTimeout(fetchDataTimeout)
+                .buildAndRegister();
+    }
+
+    /**
+     * /**
      * 获取缓存
      *
      * @param key 缓存key
@@ -163,6 +194,7 @@ public class LightCache<V> {
     public void invalidate(String key) {
         checkRegister();
         caffeine.invalidate(key);
+        fireRemoveEvent(key);
     }
 
     /**
@@ -183,16 +215,16 @@ public class LightCache<V> {
         // set redis
         String redisKey = getRedisKey(key);
         String lockKey = getLockKey(key);
-        RBucket<V> bucket = redissonClient.getBucket(redisKey);
+        RBucket<byte[]> bucket = redissonClient.getBucket(redisKey);
         // get the lock and refresh the redis cache
         RLock lock = redissonClient.getLock(lockKey);
         // 尝试获取锁，获取不到锁，直接删除本地缓存
         boolean success = lock.tryLock();
-        // 获取分布式锁成功的刷新 redis，并使本地缓存失效
+        // 获取分布���锁成功的刷新 redis，并使本地缓存失效
         if (success) {
             try {
                 log.info("refreshOnMsg get lock key:{}", lockKey);
-                // 先删掉 redis 中缓存 不然会导致本地缓存失效后，又把redis 中旧数据设置到本地缓存
+                // 先删掉 redis 中缓存 不��会���致本地缓存失效后，把redis 中旧数据设置到本地缓存
                 bucket.delete();
                 if (isDelete) {
                     log.info("refreshOnMsg delete cache from redis key:{}", key);
@@ -205,9 +237,11 @@ public class LightCache<V> {
                     // 设置到redis
                     log.info("refreshOnMsg set cache to redis key:{} value:{}", key, value);
                     // Redis 缓存时间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
-                    bucket.set(value, Duration.ofMillis(expireAfterWrite));
+                    long useExpireAfterWrite = this.expireAfterWrite
+                            + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
+                    bucket.set(serializer.serialize(value), Duration.ofMillis(useExpireAfterWrite));
                 } else {
-                    // 防止缓存穿透 设置极短的过期时间
+                    // 防止存穿透 设置极短的过期时间
                     bucket.set(null, Duration.ofMillis(50));
                 }
             } finally {
@@ -238,20 +272,31 @@ public class LightCache<V> {
             });
         } else {
             // 限制表达式执行时间
-            // 执行表达式并转换结果为字符串
+            // 执行表达式并转换结果���字符串
             future = CompletableFuture.supplyAsync(() -> {
                 try {
-                    return (V) compiledExp.execute(Collections.singletonMap("key", key));
+                    Object result = compiledExp.execute(Collections.singletonMap("key", key));
+                    @SuppressWarnings("unchecked")
+                    V typedResult = result != null ? (V) result : null;
+                    return typedResult;
                 } catch (Exception e) {
                     log.error("execute expression error, key:{}", key, e);
                     return null;
                 }
             });
         }
-        return getV(key, future, timeout);
+        return getValueWithTimeout(key, future, timeout);
     }
 
-    private static <V> V getV(String key, CompletableFuture<V> future, long timeout) {
+    /**
+     * 获取值并设置超时时间
+     *
+     * @param key     缓存key
+     * @param future  CompletableFuture
+     * @param timeout 超时时间
+     * @return 缓存数据
+     */
+    private static <V> V getValueWithTimeout(String key, CompletableFuture<V> future, long timeout) {
         if (future == null) {
             return null;
         }
@@ -286,12 +331,12 @@ public class LightCache<V> {
         }
 
         String redisKey = getRedisKey(key);
-        RBucket<V> bucket = redissonClient.getBucket(redisKey);
-        V value = bucket.get();
+        RBucket<byte[]> bucket = redissonClient.getBucket(redisKey);
+        Object value = serializer.deserialize(bucket.get());
         // redis有，直接返回
         if (value != null) {
             log.info("get cache from redis key:{} value:{}", key, value);
-            return value;
+            return (V) value;
         }
 
         // redis也没有，从数据获取器获取 但是需要用分布式锁，防止缓存击穿
@@ -300,12 +345,12 @@ public class LightCache<V> {
         // 获取分布式锁
         /*
          * 如果此时获取不到锁，说明有其它线程正在更新Redis数据，此时：
-         * 1. 如果设置了超时时间,在超时时间内等待锁，如果超时直接返回null
+         * 1. 如果设置了超���时间,在超时时间内等待锁，如果超时直接返回null
          * 2、如果没有设置超时时间，直接阻塞等待锁
          */
         boolean locked = false;
         if (this.loadCacheWaitLockTimeout == WAIT_FOREVER) {
-            // 不限制超时时间 使用 lock() 进行阻塞
+            // 不限制���时时间 使用 lock() 进行阻塞
             lock.lock();
             locked = true;
         } else {
@@ -334,14 +379,14 @@ public class LightCache<V> {
     }
 
     @Nullable
-    private V getValueFromDataFetcher(String key, String lockKey, RBucket<V> bucket) {
-        V value;
+    private V getValueFromDataFetcher(String key, String lockKey, RBucket<byte[]> bucket) {
+        Object value;
         log.info("getFromRedisOrFetcher get lock key:{}", lockKey);
-        // 取到锁，依旧需要再次判断 可能其它线程已经更新了Redis数据
-        value = bucket.get();
+        // 取到锁，依旧要再次判断 可能其它线程已经更新了Redis数据
+        value = serializer.deserialize(bucket.get());
         if (value != null) {
             log.info("get cache from redis again. redis key:{} value:{}", key, value);
-            return value;
+            return (V) value;
         }
 
         // 从数据获取器获取
@@ -352,7 +397,7 @@ public class LightCache<V> {
                 // Execute expression and convert result to string
                 Object result = compiledExp.execute(Collections.singletonMap("key", key));
                 if (result != null) {
-                    value = (V) result;
+                    value = result;
                 }
             }
         } catch (Exception e) {
@@ -361,13 +406,16 @@ public class LightCache<V> {
         if (value != null) {
             // 设置到redis
             log.info("set cache to redis key:{} value:{}", key, value);
-            // Redis 缓存时间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
-            bucket.set(value, Duration.ofMillis(expireAfterWrite));
+            // Redis 缓存���间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
+            long useExpireAfterWrite = this.expireAfterWrite
+                    + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
+            bucket.set(serializer.serialize(value), Duration.ofMillis(useExpireAfterWrite));
+            firePutEvent(key, (V) value);
         } else {
             // 防止缓存穿透 设置极短的过期时间
             bucket.set(null, Duration.ofMillis(50));
         }
-        return value;
+        return (V) value;
     }
 
     private String getRedisKey(String key) {
@@ -393,15 +441,21 @@ public class LightCache<V> {
         /**
          * 使用RocketMQ消息队列
          */
-        ROCKETMQ
+        ROCKETMQ,
+        /**
+         * 使用Kafka消息队列
+         */
+        KAFKA
     }
 
-    // builder 模式
+    // builder 模
     public static class CacheBuilder<T> {
         private String cacheName;
         private int initialCapacity = 50;
         private long maximumSize = 50000L;
         private long expireAfterWrite = 5000L;
+        // 过期时间随机范围
+        private long expireRandomRange = 500L;
         // 默认一天刷新一次
         private long refreshAfterWrite = 86400000L;
         // -1 表示不限制超时时间
@@ -420,6 +474,10 @@ public class LightCache<V> {
         private Function<String, T> fetcher;
         private String mqTopic;
         private String loadCacheExpression;
+        // 是否开启统计
+        private boolean enableStats = false;
+        private final List<CacheEventListener> eventListeners = new ArrayList<>();
+        private CacheSerializer serializer = new KryoSerializer(); // default serializer
 
         public CacheBuilder<T> cacheName(String cacheName) {
             if (StringUtils.isBlank(cacheName)) {
@@ -441,6 +499,11 @@ public class LightCache<V> {
 
         public CacheBuilder<T> expireAfterWrite(long expireAfterWrite) {
             this.expireAfterWrite = expireAfterWrite;
+            return this;
+        }
+
+        public CacheBuilder<T> expireRandomRange(long expireRandomRange) {
+            this.expireRandomRange = expireRandomRange;
             return this;
         }
 
@@ -490,6 +553,21 @@ public class LightCache<V> {
             return this;
         }
 
+        public CacheBuilder<T> enableStats(boolean enableStats) {
+            this.enableStats = enableStats;
+            return this;
+        }
+
+        public CacheBuilder<T> addEventListeners(CacheEventListener... listeners) {
+            this.eventListeners.addAll(Arrays.asList(listeners));
+            return this;
+        }
+
+        public CacheBuilder<T> serializer(CacheSerializer serializer) {
+            this.serializer = serializer;
+            return this;
+        }
+
         /**
          * 构建并注册缓存
          */
@@ -504,8 +582,14 @@ public class LightCache<V> {
          * @return 缓存
          */
         private LightCache<T> build() {
-            return new LightCache<>(this);
+            LightCache<T> cache = new LightCache<>(this);
+            // 注册事件监听器
+            for (CacheEventListener listener : eventListeners) {
+                cache.addEventListener(listener);
+            }
+            return cache;
         }
+
     }
 
     private LightCache(CacheBuilder<V> cacheBuilder) {
@@ -555,26 +639,60 @@ public class LightCache<V> {
             // 编译表达式 并缓存
             this.compiledExp = AviatorEvaluator.compile(cacheBuilder.loadCacheExpression, true);
         } else {
-            // 使用数据获取器
+            // 使用数据获取
             this.fetcher = cacheBuilder.fetcher;
         }
 
         LightCacheManager cacheManager = LightCacheManager.getInstance();
         this.useRedisAsCache = cacheManager.isUseRedisAsCache();
         this.redissonClient = cacheManager.getRedissonClient();
+        this.serializer = cacheBuilder.serializer;
 
-        this.caffeine = Caffeine.newBuilder()
-                .initialCapacity(initialCapacity)
-                .maximumSize(maximumSize)
-                .expireAfterWrite(Duration.ofMillis(expireAfterWrite))
-                .refreshAfterWrite(Duration.ofMillis(refreshAfterWrite))
-                .executor(executorService)
-                // 缓存加载器
-                // 以下几种情况会触发加载器加载数据
-                // 1. 缓存不存在 2. 缓存过期 3. 缓存刷新
-                .build(this::loadCache);
+        // 计算随机过期时间范围 (默认为过期时间的10%)
+        this.expireRandomRange = cacheBuilder.expireRandomRange > 0 ? cacheBuilder.expireRandomRange
+                : (long) (this.expireAfterWrite * 0.1);
 
-        log.info("LightCache build success, cacheName:{}", cacheName);
+        long useExpireAfterWrite = this.expireAfterWrite
+                + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
+
+        log.info("the useExpireAfterWrite of {} is {}", cacheName, useExpireAfterWrite);
+        if (cacheBuilder.enableStats) {
+            this.caffeine = Caffeine.newBuilder()
+                    .initialCapacity(initialCapacity)
+                    .maximumSize(maximumSize)
+                    .expireAfterWrite(Duration.ofMillis(useExpireAfterWrite))
+                    .refreshAfterWrite(Duration.ofMillis(refreshAfterWrite))
+                    .executor(executorService)
+                    // 开启统计 对性能有一定影响 生产建议关闭
+                    .recordStats()
+                    // 缓存加载器
+                    // 以下几种情况会触发加载器加载数据
+                    // 1. 缓存不存在 2. 缓存过期 3. 缓存刷新
+                    .build(key -> {
+                        Timer.Sample sample = this.metrics.startTimer();
+                        try {
+                            return loadCache(key);
+                        } catch (Exception e) {
+                            this.metrics.recordLoadError(cacheName);
+                            throw e;
+                        } finally {
+                            this.metrics.stopTimer(sample);
+                        }
+                    });
+        } else {
+            this.caffeine = Caffeine.newBuilder()
+                    .initialCapacity(initialCapacity)
+                    .maximumSize(maximumSize)
+                    .expireAfterWrite(Duration.ofMillis(useExpireAfterWrite))
+                    .refreshAfterWrite(Duration.ofMillis(refreshAfterWrite))
+                    .executor(executorService) // Caffeine的异步执行器
+                    .build(this::loadCache); // 加载缓存的函数
+        }
+        log.info("LightCache build success, cacheName: {}", cacheName);
+
+        // 创建并注册缓存指标
+        this.metrics = new CacheMetrics(LightCacheManager.METRICS_REGISTRY, cacheName);
+
     }
 
     /**
@@ -586,6 +704,77 @@ public class LightCache<V> {
             throw new IllegalStateException(
                     "Cache not found:[" + cacheName + "]. You must register the cache before using it");
         }
+    }
+
+    /**
+     * 获取缓存统计信��
+     */
+    public CacheStats stats() {
+        return CacheStats.from(cacheName, caffeine.stats());
+    }
+
+    /**
+     * 添加事件监听器
+     */
+    public void addEventListener(CacheEventListener listener) {
+        eventListeners.add(listener);
+    }
+
+    /**
+     * 触发事件的工具方法
+     */
+    private void firePutEvent(String key, V value) {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onPut(cacheName, key, value);
+            } catch (Exception e) {
+                log.error("Error firing put event", e);
+            }
+        }
+    }
+
+    /**
+     * 触发移除事件
+     */
+    private void fireRemoveEvent(String key) {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onRemove(cacheName, key);
+            } catch (Exception e) {
+                log.error("Error firing remove event", e);
+            }
+        }
+    }
+
+    /**
+     * 触发过期事件
+     */
+    private void fireExpireEvent(String key) {
+        for (CacheEventListener listener : eventListeners) {
+            try {
+                listener.onExpire(cacheName, key);
+            } catch (Exception e) {
+                log.error("Error firing expire event", e);
+            }
+        }
+    }
+
+    /**
+     * 直接put缓存
+     */
+    public void put(String key, V value) {
+        caffeine.put(key, value);
+        metrics.updateCacheSize(caffeine.estimatedSize());
+        firePutEvent(key, value);
+    }
+
+    /**
+     * 直接remove缓存
+     */
+    public void remove(String key) {
+        caffeine.invalidate(key);
+        metrics.updateCacheSize(caffeine.estimatedSize());
+        fireRemoveEvent(key);
     }
 
 }

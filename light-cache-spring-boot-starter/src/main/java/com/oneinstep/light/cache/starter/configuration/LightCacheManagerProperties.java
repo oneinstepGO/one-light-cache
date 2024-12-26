@@ -20,6 +20,10 @@ public class LightCacheManagerProperties {
      */
     private String rocketmqNameServer;
     /**
+     * Kafka Bootstrap Servers
+     */
+    private String kafkaBootstrapServers;
+    /**
      * 生产者组
      */
     private String producerGroup = "light-cache-producer-group";
@@ -74,7 +78,7 @@ public class LightCacheManagerProperties {
          */
         private String mqType = "ROCKETMQ";
         /**
-         * mq主题
+         * mq���题
          */
         private String mqTopic;
     }

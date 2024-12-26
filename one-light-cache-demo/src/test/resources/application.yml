@@ -6,6 +6,8 @@ light:
     consumer-group: my-cache-consumer-group
     # RocketMQ 名称服务器
     rocketmq-name-server: localhost:9876
+    # Kafka
+    kafka-bootstrap-servers: localhost:9092
     # 是否使用 Redis 作为缓存 默认 true
     use-redis-as-cache: true
     # 缓存配置 可配置多个缓存
@@ -29,3 +31,4 @@ light:
         mq-topic: user_data_change
         # mq 类型，默认使用 RocketMQ
         mq-type: REDIS
+
