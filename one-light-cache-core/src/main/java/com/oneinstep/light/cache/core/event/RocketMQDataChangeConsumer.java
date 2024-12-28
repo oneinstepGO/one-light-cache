@@ -41,19 +41,27 @@ public class RocketMQDataChangeConsumer extends AbsDataChangeConsumer {
             this.consumer.registerMessageListener((MessageListenerConcurrently) (messages, context) -> {
                 try {
                     for (MessageExt msg : messages) {
-                        byte[] body = msg.getBody();
-                        String message = new String(body, StandardCharsets.UTF_8);
 
+                        byte[] body = msg.getBody();
+                        if (body == null) {
+                            log.error("Message body is null, messageId: {}", msg.getMsgId());
+                            // 消息体为空是不可恢复的错误，直接返回消费成功
+                            continue;
+                        }
+                        String message = new String(body, StandardCharsets.UTF_8);
                         consumeMsg(message);
 
                     }
+                    // 所有消息都已处理，返回消费成功
+                    return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
                 } catch (Exception e) {
-                    log.error("Failed to parse message", e);
+                    // 批量消息处理过程中发生系统级异常，需要重试
+                    log.error("System error while consuming messages", e);
+                    return ConsumeConcurrentlyStatus.RECONSUME_LATER;
                 }
-                return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
-
             });
         } catch (MQClientException e) {
+            // 消费者初始化失败是致命错误，需要抛出异常中断启动
             log.error("RocketMQDataChangeConsumer init failed, namesrvAddr: {}, topic: {}, consumerGroup: {}",
                     namesrvAddr, topic, consumerGroup, e);
             throw new LightCacheException("Fail to init RocketMQDataChangeConsumer with topic: " + topic, e);

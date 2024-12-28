@@ -30,12 +30,10 @@ public class KafkaDataChangeConsumer extends AbsDataChangeConsumer {
 
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroup);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        // 自动提交偏移量
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
-        props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, "1000");
+        // 不自动提交偏移量
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         // 从最新的消息开始消费
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         // 设置客户端ID
@@ -72,13 +70,13 @@ public class KafkaDataChangeConsumer extends AbsDataChangeConsumer {
                         for (ConsumerRecord<String, String> msg : records) {
                             log.info("Received message: topic={}, partition={}, offset={}, key={}, value={}",
                                     msg.topic(), msg.partition(), msg.offset(), msg.key(), msg.value());
-                            try {
-                                consumeMsg(msg.value());
-                                log.info("Successfully processed message: {}", msg.value());
-                            } catch (Exception e) {
-                                log.error("Error processing message: {}", msg.value(), e);
-                            }
+                            consumeMsg(msg.value());
+                            log.info("Successfully processed message: {}", msg.value());
                         }
+
+                        // 所有消息都已处理，提交消费位移
+                        consumer.commitSync();
+
                     } catch (Exception e) {
                         if (isRunning) {
                             log.error("Error while consuming messages from topic: {}", topic, e);
@@ -118,4 +116,5 @@ public class KafkaDataChangeConsumer extends AbsDataChangeConsumer {
         }
         log.info("KafkaDataChangeConsumer stopped for topic: {}", topic);
     }
-} 
+
+}

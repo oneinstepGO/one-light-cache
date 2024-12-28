@@ -42,6 +42,7 @@ public abstract class BaseTest {
                 .maximumSize(100)
                 .expireAfterWrite(5000)
                 .fetcher(this::getUser)
+                // .loadCacheExpression("getUserById(userId)")
                 .mqTopic("test_user_topic_" + index)
                 .mqType(LightCache.MQType.REDIS)
                 .enableStats(enableStats)
