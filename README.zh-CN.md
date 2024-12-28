@@ -234,3 +234,8 @@ light:
 2. 缓存一致性通过以下方式维护：
     - Redis 作为分布式锁
     - 消息队列（Redis/RocketMQ/Kafka）进行变更通知
+
+欢迎关注我的公众号“**子安聊代码**”，一起探讨技术。
+<div style="text-align: center;">
+    <img src="https://mp-img-1300842660.cos.ap-guangzhou.myqcloud.com/1725553610603-faeaaec6-b1b6-4f03-b4e2-7ddbf6fbccdf.jpg" style="width: 100px;" alt="">
+</div>
