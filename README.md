@@ -1,5 +1,7 @@
 # one-light-cache
 
+[中文文档](README.zh-CN.md)
+
 ## Introduction
 
 `one-light-cache` is a lightweight distributed caching framework built on top of Caffeine and Redisson. It provides a

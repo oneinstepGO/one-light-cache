@@ -235,6 +235,10 @@ light:
     - Redis 作为分布式锁
     - 消息队列（Redis/RocketMQ/Kafka）进行变更通知
 
+--- 
+
+相关微信公众号文章：[如何设计一个分布式缓存系统？](https://mp.weixin.qq.com/s/y4LRACWVP7f6nkpZbylHpg)
+
 欢迎关注我的公众号“**子安聊代码**”，一起探讨技术。
 <div style="text-align: center;">
     <img src="https://mp-img-1300842660.cos.ap-guangzhou.myqcloud.com/1725553610603-faeaaec6-b1b6-4f03-b4e2-7ddbf6fbccdf.jpg" style="width: 100px;" alt="">
