@@ -1,5 +1,6 @@
 package com.oneinstep.light.cache.core;
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.oneinstep.light.cache.core.event.AbsDataChangeConsumer;
 import com.oneinstep.light.cache.core.event.ConsumerEventPublisher;
 import com.oneinstep.light.cache.core.exception.CacheNameExistException;
@@ -11,12 +12,17 @@ import jakarta.annotation.Nonnull;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RBlockingDeque;
+import org.redisson.api.RDelayedQueue;
 import org.redisson.api.RedissonClient;
 
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 缓存管理器 单例模式
@@ -65,14 +71,20 @@ public class LightCacheManager {
     @Getter
     private boolean useRedisAsCache = true;
 
+    private final ExecutorService delayMsgExecutor = Executors.newSingleThreadExecutor(
+            new ThreadFactoryBuilder().setNameFormat("delay-msg-consumer-%d").build());
+    private volatile boolean isRunning = true;
+    private RDelayedQueue<CacheDelayMsg> delayedQueue;
+    private RBlockingDeque<CacheDelayMsg> blockingDeque;
+
     /**
      * 初始化
      *
-     * @param useRedisAsCache    是否使用Redis作为缓存
-     * @param redissonClient     Redisson客户端
-     * @param rocketmqNameServer RocketMQ NameServer
+     * @param useRedisAsCache       是否使用Redis作为缓存
+     * @param redissonClient        Redisson客户端
+     * @param rocketmqNameServer    RocketMQ NameServer
      * @param kafkaBootstrapServers Kafka Bootstrap Servers
-     * @param consumerGroup      消费者组
+     * @param consumerGroup         消费者组
      */
     public synchronized void init(boolean useRedisAsCache, RedissonClient redissonClient, String rocketmqNameServer,
                                   String kafkaBootstrapServers, String consumerGroup) {
@@ -88,6 +100,9 @@ public class LightCacheManager {
         this.rocketmqNameServer = rocketmqNameServer;
         this.kafkaBootstrapServers = kafkaBootstrapServers;
         this.consumerGroup = consumerGroup;
+
+        // 启动延迟消息消费者
+        startDelayMsgConsumer();
 
         isInit = true;
         log.info("LightCacheManager initialized");
@@ -250,4 +265,100 @@ public class LightCacheManager {
         return Collections.unmodifiableMap(ALL_CACHE);
     }
 
+    /**
+     * 发送延迟消息
+     *
+     * @param cacheName 缓存名称
+     * @param cacheKey  缓存键
+     */
+    public void sendDelayMsg(String cacheName, String cacheKey, long delayTime) {
+        if (redissonClient == null) {
+            log.warn("RedissonClient is not initialized");
+            return;
+        }
+        try {
+            if (delayedQueue == null) {
+                synchronized (this) {
+                    if (delayedQueue == null) {
+                        blockingDeque = redissonClient.getBlockingDeque("cache_delay_msg");
+                        delayedQueue = redissonClient.getDelayedQueue(blockingDeque);
+                    }
+                }
+            }
+            delayedQueue.offer(new CacheDelayMsg(cacheName, cacheKey), delayTime, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            log.error("Failed to send delay message: cacheName={}, cacheKey={}", cacheName, cacheKey, e);
+        }
+    }
+
+    /**
+     * 启动延迟消息消费者
+     */
+    public void startDelayMsgConsumer() {
+        if (redissonClient == null) {
+            log.warn("RedissonClient is not initialized");
+            return;
+        }
+
+        if (delayedQueue == null) {
+            synchronized (this) {
+                if (delayedQueue == null) {
+                    blockingDeque = redissonClient.getBlockingDeque("cache_delay_msg");
+                    delayedQueue = redissonClient.getDelayedQueue(blockingDeque);
+                }
+            }
+        }
+
+        delayMsgExecutor.submit(() -> {
+            while (isRunning) {
+                try {
+                    CacheDelayMsg msg = blockingDeque.poll(1, TimeUnit.SECONDS);
+                    if (msg != null) {
+                        String cacheName = msg.getCacheName();
+                        String cacheKey = msg.getCacheKey();
+
+                        if (StringUtils.isNotBlank(cacheName) && StringUtils.isNotBlank(cacheKey)) {
+                            try {
+                                getCache(cacheName).invalidate(cacheKey);
+                                log.debug("Successfully processed delay message: cacheName={}, cacheKey={}",
+                                        cacheName, cacheKey);
+                            } catch (Exception e) {
+                                log.error("Failed to process delay message: cacheName={}, cacheKey={}",
+                                        cacheName, cacheKey, e);
+                            }
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    if (!isRunning) {  // 只有在要求停止时才退出
+                        log.info("Delay message consumer is shutting down");
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    log.warn("Poll interrupted, will retry", e);
+                } catch (Exception e) {
+                    log.error("Error processing delay message", e);
+                }
+            }
+        });
+    }
+
+    public void shutdown() {
+        isRunning = false;
+        if (delayedQueue != null) {
+            try {
+                delayedQueue.destroy();
+            } catch (Exception e) {
+                log.error("Error destroying delayed queue", e);
+            }
+        }
+        delayMsgExecutor.shutdown();
+        try {
+            if (!delayMsgExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                delayMsgExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            delayMsgExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 }

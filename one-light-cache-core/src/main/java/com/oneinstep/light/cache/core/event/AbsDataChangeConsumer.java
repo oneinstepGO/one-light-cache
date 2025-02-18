@@ -86,12 +86,12 @@ public abstract class AbsDataChangeConsumer {
         switch (type) {
             case UPDATE:
                 log.info("Processing UPDATE message for dataId: {}", dataId);
-                cache.refreshOnMsg(dataId, false);
+                cache.refreshOnMsg(dataId);
                 log.info("Successfully processed UPDATE message for dataId: {}", dataId);
                 break;
             case DELETE:
                 log.info("Processing DELETE message for dataId: {}", dataId);
-                cache.refreshOnMsg(dataId, true);
+                cache.refreshOnMsg(dataId);
                 cache.invalidate(dataId); // Ensure the cache entry is invalidated
                 log.info("Successfully processed DELETE message for dataId: {}", dataId);
                 break;

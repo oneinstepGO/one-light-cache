@@ -58,6 +58,11 @@ public class LightCache<V> {
     public static final long MAX_FETCH_DATA_TIMEOUT = 15000L;
 
     /**
+     * 延时消息延迟时间
+     */
+    public static final long DELAY_MSG_DELAY_TIME = 500L;
+
+    /**
      * 缓存名
      */
     @Getter
@@ -108,7 +113,7 @@ public class LightCache<V> {
 
     /**
      * 消息队列类型 用于通知本地缓存更新
-     * 默认使用 RocketMQ，推荐使用 RocketMQ，因为 redis 的消息发���订阅功能不够完善，可能会丢失消息
+     * 默认使用 RocketMQ，推荐使用 RocketMQ，因为 redis 的消息发布订阅功能不够完善，可能会丢失消息
      */
     @Getter
     private MQType mqType;
@@ -201,57 +206,40 @@ public class LightCache<V> {
      * 收到更新消息时，刷新本地缓存
      *
      * @param key      缓存key
-     * @param isDelete 是否删除缓存
      */
-    public void refreshOnMsg(String key, boolean isDelete) {
+    public void refreshOnMsg(String key) {
         checkRegister();
         if (!useRedisAsCache || redissonClient == null || redissonClient.isShutdown()) {
             log.info("not use redis, just invalidate local cache key:{}", key);
-            // 本地缓存失效
             invalidate(key);
             return;
         }
         log.info("refresh key:{}", key);
-        // set redis
+
         String redisKey = getRedisKey(key);
         String lockKey = getLockKey(key);
         RBucket<byte[]> bucket = redissonClient.getBucket(redisKey);
-        // get the lock and refresh the redis cache
+
         RLock lock = redissonClient.getLock(lockKey);
-        // 尝试获取锁，获取不到锁，直接删除本地缓存
         boolean success = lock.tryLock();
-        // 获取分布���锁成功的刷新 redis，并使本地缓存失效
         if (success) {
             try {
                 log.info("refreshOnMsg get lock key:{}", lockKey);
-                // 先删掉 redis 中缓存 不��会���致本地缓存失效后，把redis 中旧数据设置到本地缓存
+                // 只删除缓存，不主动查询新数据
                 bucket.delete();
-                if (isDelete) {
-                    log.info("refreshOnMsg delete cache from redis key:{}", key);
-                    invalidate(key);
-                    return;
-                }
-                V value = getValueByFetcherOrExpression(key);
-
-                if (value != null) {
-                    // 设置到redis
-                    log.info("refreshOnMsg set cache to redis key:{} value:{}", key, value);
-                    // Redis 缓存时间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
-                    long useExpireAfterWrite = this.expireAfterWrite
-                            + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
-                    bucket.set(serializer.serialize(value), Duration.ofMillis(useExpireAfterWrite));
-                } else {
-                    // 防止存穿透 设置极短的过期时间
-                    bucket.set(null, Duration.ofMillis(50));
-                }
+                log.info("Deleted Redis cache for key: {}", key);
             } finally {
                 lock.unlock();
             }
         } else {
-            log.info("refreshOnMsg but get lock failed key:{} , just invalidate local cache", key);
+            log.info("refreshOnMsg but get lock failed key:{}", key);
         }
-        // 获没获取到锁，都删除本地缓存
+
+        // 删除本地缓存
         invalidate(key);
+
+        // 发送延时消息进行二次删除
+        sendDelayMsg(key, DELAY_MSG_DELAY_TIME);
     }
 
     private V getValueByFetcherOrExpression(String key) {
@@ -272,7 +260,7 @@ public class LightCache<V> {
             });
         } else {
             // 限制表达式执行时间
-            // 执行表达式并转换结果���字符串
+            // 执行表达式并转换结果为字符串
             future = CompletableFuture.supplyAsync(() -> {
                 try {
                     Object result = compiledExp.execute(Collections.singletonMap("key", key));
@@ -286,6 +274,10 @@ public class LightCache<V> {
             });
         }
         return getValueWithTimeout(key, future, timeout);
+    }
+
+    private void sendDelayMsg(String cacheKey, long delayTime) {
+        LightCacheManager.getInstance().sendDelayMsg(cacheName, cacheKey, delayTime);
     }
 
     /**
@@ -345,12 +337,12 @@ public class LightCache<V> {
         // 获取分布式锁
         /*
          * 如果此时获取不到锁，说明有其它线程正在更新Redis数据，此时：
-         * 1. 如果设置了超���时间,在超时时间内等待锁，如果超时直接返回null
+         * 1. 如果设置了超时时间,在超时时间内等待锁，如果超时直接返回null
          * 2、如果没有设置超时时间，直接阻塞等待锁
          */
         boolean locked = false;
         if (this.loadCacheWaitLockTimeout == WAIT_FOREVER) {
-            // 不限制���时时间 使用 lock() 进行阻塞
+            // 不限制获取锁时间 使用 lock() 进行阻塞
             lock.lock();
             locked = true;
         } else {
@@ -403,17 +395,24 @@ public class LightCache<V> {
         } catch (Exception e) {
             log.error("fetcher error", e);
         }
-        if (value != null) {
-            // 设置到redis
-            log.info("set cache to redis key:{} value:{}", key, value);
-            // Redis 缓存���间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
-            long useExpireAfterWrite = this.expireAfterWrite
-                    + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
-            bucket.set(serializer.serialize(value), Duration.ofMillis(useExpireAfterWrite));
-            firePutEvent(key, (V) value);
-        } else {
-            // 防止缓存穿透 设置极短的过期时间
-            bucket.set(null, Duration.ofMillis(50));
+
+        // 设置到redis，即使是null值也需要序列化后存储
+        log.info("set cache to redis key:{} value:{}", key, value);
+        // Redis 缓存时间是本地缓存的两倍 以防止本地缓存过期后，数据还没有更新到Redis
+        long useExpireAfterWrite = this.expireAfterWrite
+                + ThreadLocalRandom.current().nextLong(0, this.expireRandomRange);
+
+        try {
+            byte[] serializedValue = serializer.serialize(value);
+            bucket.set(serializedValue, Duration.ofMillis(useExpireAfterWrite));
+            if (value == null) {
+                log.info("Stored null value in Redis for key: {}, serialized length: {}", key,
+                        serializedValue != null ? serializedValue.length : 0);
+            } else {
+                firePutEvent(key, (V) value);
+            }
+        } catch (Exception e) {
+            log.error("Error serializing and storing value in Redis for key: {}", key, e);
         }
         return (V) value;
     }
@@ -707,7 +706,7 @@ public class LightCache<V> {
     }
 
     /**
-     * 获取缓存统计信��
+     * 获取缓存统计信息
      */
     public CacheStats stats() {
         return CacheStats.from(cacheName, caffeine.stats());
