@@ -74,7 +74,7 @@ public class LightCacheManager {
     private final ExecutorService delayMsgExecutor = Executors.newSingleThreadExecutor(
             new ThreadFactoryBuilder().setNameFormat("delay-msg-consumer-%d").build());
     private volatile boolean isRunning = true;
-    private RDelayedQueue<CacheDelayMsg> delayedQueue;
+    private volatile RDelayedQueue<CacheDelayMsg> delayedQueue;
     private RBlockingDeque<CacheDelayMsg> blockingDeque;
 
     /**
